@@ -57,6 +57,31 @@ func TestAddInstanceHandlerFailure(t *testing.T) {
 	}
 }
 
+func TestRemoveInstanceHandler(t *testing.T) {
+	var err error
+	G_LB, err = NewLB(t.Context(), "")
+	if err != nil {
+		t.Fatal("NewLB should not error here: ", err)
+	}
+
+	if err := G_LB.AddInstance("http://localhost:20000"); err != nil {
+		t.Fatal("AddInstance should not error here: ", err)
+	}
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(removeInstanceHandler)
+
+	req, err := http.NewRequest(http.MethodPut, "http://localhost:30000/removeinstance", bytes.NewBuffer([]byte(`http://localhost:20000`)))
+	if err != nil {
+		t.Fatal("NewRequest should not error here: ", err)
+	}
+	handler.ServeHTTP(rr, req)
+
+	if len(G_LB.instances) != 0 {
+		t.Errorf("number of instances should be 0. Actual: %d\n", len(G_LB.instances))
+	}
+}
+
 func TestNodeStatusHandler(t *testing.T) {
 	var err error
 	G_LB, err = NewLB(t.Context(), "http://localhost:20000,http://localhost:20001")

@@ -19,6 +19,7 @@ type Instance struct {
 	responseTimeCache    []int64 // Store a window of response times to create average
 	lastResponseAt       int64
 	healthy              bool
+	cancelFunc           context.CancelFunc
 }
 
 func NewInstance(urlString string) (*Instance, error) {
@@ -36,8 +37,8 @@ func NewInstance(urlString string) (*Instance, error) {
 }
 
 func (ins *Instance) monitor(ctx context.Context) {
-	tc := time.NewTicker(time.Second * 5)
-	tAvg := time.NewTicker(time.Second * 1)
+	tc := time.NewTicker(time.Second * 1)   // Check instance health every second
+	tAvg := time.NewTicker(time.Second * 2) // Calculate response time average every 2 seconds
 	for {
 		select {
 		case <-ctx.Done():
@@ -59,8 +60,11 @@ func (ins *Instance) monitor(ctx context.Context) {
 				ins.mx.Unlock()
 			}
 		case <-tAvg.C:
-			if (time.Now().UnixMilli() - ins.lastResponseAt) > 10 {
+			if (time.Now().UnixMilli() - ins.lastResponseAt) > 5*1000 { // Every 5+ seconds allow the server to be called again
+				ins.mx.Lock()
 				ins.avgResponseTimeMilli = 0
+				ins.responseTimeCache = []int64{}
+				ins.mx.Unlock()
 			}
 
 			if len(ins.responseTimeCache) > 0 {
@@ -72,13 +76,14 @@ func (ins *Instance) monitor(ctx context.Context) {
 				ins.avgResponseTimeMilli = float64(sum) / float64(len(ins.responseTimeCache))
 				ins.mx.Unlock()
 			}
+			RESPONSE_DURATION_METRIC.WithLabelValues(ins.url).Set(ins.avgResponseTimeMilli)
 		}
 
 	}
 }
 
 func (ins *Instance) isAvailable() bool {
-	if ins.avgResponseTimeMilli > 100 {
+	if ins.avgResponseTimeMilli > 10 {
 		return false
 	}
 
@@ -96,7 +101,7 @@ func (ins *Instance) logResponseTime(start, end int64) {
 	ins.lastResponseAt = end
 }
 
-func (ins *Instance) jsonHandler(res http.ResponseWriter, req *http.Request) {
+func (ins *Instance) jsonHandler(res http.ResponseWriter, req *http.Request) error {
 	start := time.Now().UnixMilli()
 	// call the associated responder service
 	client := http.Client{Timeout: time.Second * 200}
@@ -107,18 +112,18 @@ func (ins *Instance) jsonHandler(res http.ResponseWriter, req *http.Request) {
 	go ins.logResponseTime(start, end)
 
 	if err != nil {
-		log.Println("[Instance.jsonHandler] -> error calling responder service: ", err)
-		res.WriteHeader(http.StatusServiceUnavailable)
-		return
+		return fmt.Errorf("[Instance.jsonHandler] -> Error calling responder: %s", err)
 	}
 
 	res.WriteHeader(resp.StatusCode)
+	RESPONSE_STATUS_METRIC.WithLabelValues(fmt.Sprintf("%d", resp.StatusCode)).Inc()
 	if resp.StatusCode != http.StatusOK {
-		return
+		return nil
 	}
 	log.Printf("[Instance.jsonHandler] -> responding from: `%s`\n", ins.url)
 	res.Header().Set("Content-Type", "application/json")
 	io.Copy(res, resp.Body)
+	return nil
 }
 
 type LB struct {
@@ -147,11 +152,33 @@ func (lb *LB) AddInstance(url string) error {
 	if err != nil {
 		return fmt.Errorf("[LB.AddInstance] -> %s", err.Error())
 	}
+	ctx, cancel := context.WithCancel(lb.Ctx)
 	lb.mx.Lock()
 	lb.instances = append(lb.instances, instance)
+	instance.cancelFunc = cancel
 	lb.mx.Unlock()
-	go instance.monitor(lb.Ctx)
+	go instance.monitor(ctx)
 	return nil
+}
+
+func (lb *LB) RemoveInstance(url string) {
+	lb.mx.Lock()
+	defer lb.mx.Unlock()
+	var instance *Instance = nil
+	var instanceIndex = -1
+	for i, ins := range lb.instances {
+		if strings.HasPrefix(url, ins.url) {
+			instance = ins
+			instanceIndex = i
+			break
+		}
+	}
+
+	if instance != nil {
+		// cancel monitoring
+		instance.cancelFunc()
+		lb.instances = append(lb.instances[0:instanceIndex], lb.instances[instanceIndex+1:]...)
+	}
 }
 
 // Round Robin - kinda!
@@ -170,7 +197,7 @@ func (lb *LB) GetInstance() *Instance {
 	// Start looking at available nodes from 1 + the last node used
 	// Increment by 1 until a node is found or we have checked all listed nodes
 	index := lb.current + 1
-	if index == n {
+	if index >= n {
 		index = 0
 	}
 	for checked < n {
@@ -180,7 +207,7 @@ func (lb *LB) GetInstance() *Instance {
 			return lb.instances[index]
 		}
 		index += 1
-		if index == n {
+		if index >= n {
 			index = 0
 		}
 	}

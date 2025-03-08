@@ -1,0 +1,1 @@
+LB_INSTANCELIST=http://responder1:20000,http://responder2:20000,http://responder3:20000

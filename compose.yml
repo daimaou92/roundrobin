@@ -1,0 +1,77 @@
+services:
+  lb:
+    build:
+      context: ./lb
+    container_name: lb
+    ports:
+      - 30000:30000
+    restart: unless-stopped
+  responder1:
+    build:
+      context: ./responder
+    container_name: responder1
+    ports:
+      - 20000:20000
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+  responder2:
+    build:
+      context: ./responder
+    container_name: responder2
+    ports:
+      - 20001:20000
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+  responder3:
+    build:
+      context: ./responder
+      dockerfile: DockerfileStress
+    container_name: responder3
+    ports:
+      - 20002:20000
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+  responder4:
+    build:
+      context: ./responder
+    container_name: responder4
+    ports:
+      - 20003:20000
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - 9090:9090
+    restart: unless-stopped
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - prom_data:/prometheus
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - 3000:3000
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=grafana
+    volumes:
+      - ./grafana:/etc/grafana/provisioning/datasources
+volumes:
+  prom_data:

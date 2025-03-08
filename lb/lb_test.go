@@ -63,15 +63,16 @@ func TestInstanceMonitor(t *testing.T) {
 
 	testServer.Start()
 	defer testServer.Close()
-	time.Sleep(time.Second * 6)
+	time.Sleep(time.Second * 2)
 	if !ins.healthy {
 		t.Error("faulty health check ticker. Server has started. Should be healthy by now")
 	}
 
+	ins.lastResponseAt = time.Now().UnixMilli()
 	ins.responseTimeCache = []int64{100, 200}
 	time.Sleep(time.Second * 2)
 	if ins.avgResponseTimeMilli != 150 {
-		t.Error("monitor is not calculating server response time average correctly")
+		t.Errorf("monitor is not calculating server response time average correctly. Actual: %v, Expected: 150\n", ins.avgResponseTimeMilli)
 	}
 }
 
@@ -147,7 +148,12 @@ func TestInstanceJsonHandler(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(ins.jsonHandler)
+	handler := http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		err := ins.jsonHandler(res, req)
+		if err != nil {
+			res.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -192,6 +198,63 @@ func TestLBAddInstance(t *testing.T) {
 
 	if !lb.instances[0].healthy {
 		t.Error("instance monitoring was not started properly")
+	}
+}
+
+func TestLBRemoveInstance(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(res http.ResponseWriter, req *http.Request) {
+		res.WriteHeader(http.StatusOK)
+	})
+
+	testServer := httptest.NewUnstartedServer(mux)
+
+	lb := LB{
+		Ctx: t.Context(),
+	}
+	instanceUrl := fmt.Sprintf("http://%s", testServer.Listener.Addr())
+	err := lb.AddInstance(instanceUrl)
+	if err != nil {
+		t.Fatal("AddInstance should not have failed here: ", err)
+	}
+
+	if len(lb.instances) != 1 {
+		t.Fatal("Number of instances should be exactly 1 here")
+	}
+
+	instance := lb.instances[0]
+
+	testServer.Start()
+	defer testServer.Close()
+
+	time.Sleep(time.Second * 6)
+
+	if !instance.healthy {
+		t.Fatal("instance monitoring was not started properly, it should've!")
+	}
+
+	lb.RemoveInstance(instanceUrl)
+
+	// Wait a little bit for context cancel function to get registered
+	time.Sleep(time.Second * 2)
+
+	instance.mx.Lock()
+	instance.responseTimeCache = []int64{5, 4, 3, 2, 1}
+	instance.mx.Unlock()
+
+	// Wait for anything above 2 seconds since average calculation happens
+	// every 2 seconds and if the duration since last response is greater
+	// than 10 - in this case it should be, since lastResponseAt is initialized to 0.
+	// But because moitoring should go off - data inside responseTimeCache
+	// should not change
+	time.Sleep(time.Second * 6)
+
+	if len(instance.responseTimeCache) != 5 {
+		t.Errorf("instance monitoring did not stop. Actual: %d. Expected: %d\n", len(instance.responseTimeCache), 5)
+	}
+
+	if len(lb.instances) != 0 {
+		t.Error("instance was not removed from the list of instances")
 	}
 }
 

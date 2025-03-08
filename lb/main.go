@@ -3,27 +3,60 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // This is made global for ease. A production grade proxy or LB impl should have it abstracted
 // away for better readability
 var G_LB *LB
 
+// Metrics
+var RESPONSE_DURATION_METRIC = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "avg_response_duration_millis",
+	Help: "Average response duration guage data in milliseconds",
+}, []string{"instance"})
+
+var RESPONSE_STATUS_METRIC = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "response_status",
+	Help: "Response status code",
+}, []string{"status"})
+
 func jsonHandler(res http.ResponseWriter, req *http.Request) {
 	instance := G_LB.GetInstance()
 	if instance == nil {
 		log.Println("[jsonHandler] -> No available instance")
+		RESPONSE_STATUS_METRIC.WithLabelValues(fmt.Sprintf("%d", http.StatusServiceUnavailable)).Inc()
 		res.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
 
-	instance.jsonHandler(res, req)
+	if err := instance.jsonHandler(res, req); err != nil {
+		// Retry - in a second and a half need
+		// not be here and can be abstracted away if more than 1 retry is needed
+		time.Sleep(time.Millisecond * 1500)
+		instance := G_LB.GetInstance()
+		if instance == nil {
+			log.Println("[jsonHandler] -> No available instance")
+			RESPONSE_STATUS_METRIC.WithLabelValues(fmt.Sprintf("%d", http.StatusServiceUnavailable)).Inc()
+			res.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if err := instance.jsonHandler(res, req); err != nil {
+			RESPONSE_STATUS_METRIC.WithLabelValues(fmt.Sprintf("%d", http.StatusServiceUnavailable)).Inc()
+			res.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}
 }
 
 func addInstanceHandler(res http.ResponseWriter, req *http.Request) {
@@ -39,6 +72,18 @@ func addInstanceHandler(res http.ResponseWriter, req *http.Request) {
 		res.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	res.WriteHeader(http.StatusOK)
+}
+
+func removeInstanceHandler(res http.ResponseWriter, req *http.Request) {
+	instanceUrl, err := io.ReadAll(req.Body)
+	if err != nil {
+		log.Println("[removeInstanceHandler] -> error reading request body", err)
+		res.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	G_LB.RemoveInstance(string(instanceUrl))
 	res.WriteHeader(http.StatusOK)
 }
 
@@ -80,7 +125,9 @@ func nodeStatusHandler(res http.ResponseWriter, req *http.Request) {
 func router(mux *http.ServeMux) {
 	mux.HandleFunc("POST /json", jsonHandler)
 	mux.HandleFunc("PUT /addinstance", addInstanceHandler)
+	mux.HandleFunc("PUT /removeinstance", removeInstanceHandler)
 	mux.HandleFunc("GET /status", nodeStatusHandler)
+	mux.Handle("/metrics", promhttp.Handler())
 }
 
 func main() {
