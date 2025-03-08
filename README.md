@@ -1,17 +1,74 @@
+# Round robin
+
+## Run
+
+- Make sure [docker engine](https://docs.docker.com/engine/install/) is installed and running
+- Make sure [docker compose](https://docs.docker.com/compose/install/) is installed
+- Clone and `cd` to root of repository and run:
+
+```bash
+docker compose up -d
+```
+
+This runs the round robin server at `:30000`. It also spawns 4 instances of a simple json responder service with ports `:20000`, `:20001`, `:20002` and `:20003`
+
+Finally it spawns a prometheus and grafana server. Prometheus is pre-configured to receive metrics from the spawned containers. Grafana is pre-configured with Prometheus as a datasource.
+
+Once the containers are up - it's time to make a lot of requests. A bash file in the repo root, [lotofreq.sh](lotofreq.sh), makes 5 requests every second - a total of 10000 - to the round robin server.
+
+Make sure `bash` is installed and let's run:
+
+```bash
+./lotofreq.sh
+```
+
+## Grafana
+
+- Go to [http://localhost:3000]((http://localhost:3000)) and login with
+
+```env
+username: admin
+password: grafana
+```
+
+There is an exported dashboard json file included in the repo at [grafana/rrDashboard.json](grafana/rrDashboard.json).
+
+Import it into Grafana - and we should have a dashboard looking like this:
+
+![RoundRobin Dashboard](assets/dashboard.png)
+
 ## Stress responder3
 
-- Log into the container
+The container **`responder3`** is built with [stress-ng](https://wiki.ubuntu.com/Kernel/Reference/stress-ng) included - infact the entirety of Debian is included - so that this can be logged into and tools can be installed and run.
+
+The remaining `responder` containers are built with Google's [distroless image](https://github.com/GoogleContainerTools/distroless)  to save space.
+
+Log into the container:
+
 ```bash
 docker exec -it responder3 bash
 ```
 
-- Stress
+and stress:
+
 ```bash
 /stress-ng --cpu 16 --cpu-method fft --timeout 5m
 ```
 
-## Add instance
+Once the average response duration for `responder3` crosses 10ms - it will start getting ignored. `5 seconds` after that requests to it will be retried until response duration crosses 10ms again - and this loop continues.
+
+Also stop and restart `responder` containers to test how the round robin server handles request routing.
+
+## Extras
+
+### Add instance
 
 ```bash
 curl -X PUT --data 'http://responder4:20000' localhost:30000/addinstance
+```
+
+### Remove instance
+
+```bash
+curl -X PUT --data 'http://responder4:20000' localhost:30000/removeinstance
 ```
