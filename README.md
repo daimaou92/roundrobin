@@ -83,11 +83,11 @@ Import it into Grafana - and we should have a dashboard looking like this:
 
 ## Stress responder3
 
-The container **`responder3`** is built with [stress-ng](https://wiki.ubuntu.com/Kernel/Reference/stress-ng) included - infact the entirety of Debian is included - so that this can be logged into and tools can be installed and run here if needed.
+The container **`responder3`** is created from an image built with [stress-ng](https://wiki.ubuntu.com/Kernel/Reference/stress-ng) included. Infact, the entirety of Debian is included so that this can be shelled into and tools can be installed and run here if needed.
 
-The remaining `responder` containers are built with Google's [distroless image](https://github.com/GoogleContainerTools/distroless)  to save space.
+The remaining `responder` containers are created from images built with Google's [distroless image](https://github.com/GoogleContainerTools/distroless)  to save space.
 
-Log into the container:
+Shell into container:
 
 ```bash
 docker exec -it responder3 bash
